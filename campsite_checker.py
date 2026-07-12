@@ -38,9 +38,9 @@ CAMPGROUND_URL = "https://reservation.pc.gc.ca/camping/campgrounds/availability"
 SEARCH_CONFIG = {
     "park":        "Banff National Park",
     "campground":  "Lake Louise Campground - Soft-sided",
-    "checkin":     "2026-08-01",   # YYYY-MM-DD
-    "checkout":    "2026-08-04",   # YYYY-MM-DD
-    "party_size":  2,
+    "checkin":     "2026-08-07",   # YYYY-MM-DD
+    "checkout":    "2026-08-08",   # YYYY-MM-DD
+    "party_size":  1,
 }
 
 # How often to check (seconds). Randomized ±30s to avoid bot detection.
