@@ -27,7 +27,10 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          playwright install chromium --with-deps
+      - name: Install Playwright browsers
+        uses: playwright-community/github-action@v1
+        with:
+              browsers: chromium
 
       - name: Check availability
         env:
