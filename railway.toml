@@ -1,0 +1,7 @@
+[build]
+builder = "dockerfile"
+
+[deploy]
+startCommand = "python campsite_checker.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
