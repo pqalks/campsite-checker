@@ -115,7 +115,7 @@ async def check_availability() -> bool | None:
             # The park field is a combobox with id="park-autocomplete-input"
             # We click it, type the park name, wait for the dropdown, then click the option.
             print(f"[{now()}] Selecting park...")
-            park_input = page.locator('#park-autocomplete-input')
+            park_input = page.locator('[aria-label="Select park"]')
             await park_input.wait_for(timeout=15_000)
             await park_input.click()
             await park_input.fill(SEARCH_CONFIG["park"])
