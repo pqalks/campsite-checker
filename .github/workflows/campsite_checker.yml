@@ -17,7 +17,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Cache Playwright browser to speed up runs
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
@@ -27,7 +26,6 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          # Install Chromium system deps manually (fixes libasound2 name change in Ubuntu 24)
           sudo apt-get update
           sudo apt-get install -y \
             libasound2t64 \
@@ -52,5 +50,14 @@ jobs:
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
           TWILIO_TO: ${{ secrets.TWILIO_TO }}
-          SINGLE_CHECK: "true"   # run once and exit (no infinite loop)
+          SINGLE_CHECK: "true"
         run: python campsite_checker.py
+
+      # Upload screenshot so we can see what the page looks like
+      - name: Upload debug screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshot
+          path: debug_screenshot.png
+          if-no-files-found: ignore
