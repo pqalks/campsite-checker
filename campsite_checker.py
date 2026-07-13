@@ -107,16 +107,23 @@ async def check_availability() -> bool | None:
             try:
                 await page.click('button:has-text("I Consent")', timeout=5_000)
                 print(f"[{now()}] Dismissed cookie consent.")
-                await page.wait_for_timeout(500)
+                await page.wait_for_load_state("networkidle", timeout=10_000)
+                await page.wait_for_timeout(2000)  # extra wait for Angular to re-render
             except Exception:
                 pass  # No cookie banner, that's fine
 
+            # ── Debug: print all aria-labels and roles on page ───────────────
+            labels = await page.evaluate("""
+                () => [...document.querySelectorAll('[aria-label]')]
+                    .map(el => el.tagName + ' aria-label="' + el.getAttribute('aria-label') + '"')
+            """)
+            print(f"[{now()}] aria-labels found: {labels[:10]}")
+
             # ── Park: Angular Material autocomplete ──────────────────────────
-            # The park field is a combobox with id="park-autocomplete-input"
-            # We click it, type the park name, wait for the dropdown, then click the option.
             print(f"[{now()}] Selecting park...")
-            park_input = page.locator('[aria-label="Select park"]')
-            await park_input.wait_for(timeout=15_000)
+            # Try multiple selectors in order of specificity
+            park_input = page.locator('[aria-label="Select park"], [role="combobox"][aria-label*="park" i], input[id*="park"]').first
+            await park_input.wait_for(state="visible", timeout=15_000)
             await park_input.click()
             await park_input.fill(SEARCH_CONFIG["park"])
             await page.wait_for_timeout(1000)  # wait for autocomplete dropdown
