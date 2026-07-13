@@ -1,266 +1,170 @@
 """
 Parks Canada Campsite Availability Checker
 ==========================================
-Polls reservation.pc.gc.ca for Lake Louise Soft-sided Campground availability
-and sends an SMS alert via Twilio when a site opens up.
+Uses Parks Canada's internal API directly — no browser, no scraping.
+Much faster and more reliable than Playwright.
+
+The mapId=-2147483646 is the Lake Louise Soft-sided Campground map ID,
+discovered from the URL: reservation.pc.gc.ca/create-booking/results?mapId=-2147483646
 
 Setup:
-  pip install playwright twilio python-dotenv
-  playwright install chromium
+  pip install requests twilio python-dotenv
 
 Create a .env file with:
   TWILIO_ACCOUNT_SID=your_account_sid
   TWILIO_AUTH_TOKEN=your_auth_token
-  TWILIO_FROM=+1xxxxxxxxxx   # your Twilio number
-  TWILIO_TO=+1xxxxxxxxxx     # your personal number
-
-Run:
-  python campsite_checker.py
+  TWILIO_FROM=+1xxxxxxxxxx
+  TWILIO_TO=+1xxxxxxxxxx
 """
 
-import asyncio
 import os
 import random
+import time
 from datetime import datetime
 
+import requests
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright
 from twilio.rest import Client
 
 load_dotenv()
 
-# ── Configuration ────────────────────────────────────────────────────────────
+# ── Configuration ─────────────────────────────────────────────────────────────
 
-CAMPGROUND_URL = "https://reservation.pc.gc.ca/camping/campgrounds/availability"
+# mapId for Lake Louise Soft-sided Campground
+# Source: reservation.pc.gc.ca/create-booking/results?mapId=-2147483646
+MAP_ID = -2147483646
 
-# Edit these to match your search
 SEARCH_CONFIG = {
-    "park":        "Banff - Lake Louise",        # exactly as it appears in the dropdown
-    "campground":  "Lake Louise Campground - Soft-sided",
-    "checkin":     "2026-08-07",   # YYYY-MM-DD
-    "checkout":    "2026-08-08",   # YYYY-MM-DD
-    "party_size":  1,
+    "checkin":    "2026-08-07",   # YYYY-MM-DD
+    "checkout":   "2026-08-08",   # YYYY-MM-DD
 }
 
-# How often to check (seconds). Randomized ±30s to avoid bot detection.
-POLL_INTERVAL_BASE = 300   # 5 minutes
+BOOKING_URL = f"https://reservation.pc.gc.ca/create-booking/results?mapId={MAP_ID}&searchTabGroupId=0&bookingCategoryId=0"
 
-# Twilio credentials from .env
+# How often to check in server mode (seconds)
+POLL_INTERVAL_BASE = 300
+
+# Twilio
 TWILIO_SID   = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_FROM  = os.getenv("TWILIO_FROM")
 TWILIO_TO    = os.getenv("TWILIO_TO")
 
-# ── Alert ────────────────────────────────────────────────────────────────────
+# ── Alert ──────────────────────────────────────────────────────────────────────
 
 def send_sms(message: str):
-    """Send an SMS alert via Twilio."""
     if not all([TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM, TWILIO_TO]):
-        print("⚠️  Twilio credentials missing — printing alert instead:")
-        print(f"   ALERT: {message}")
+        print(f"⚠️  Twilio not configured — would have sent: {message}")
         return
     try:
         client = Client(TWILIO_SID, TWILIO_TOKEN)
         client.messages.create(body=message, from_=TWILIO_FROM, to=TWILIO_TO)
-        print(f"✅ SMS sent: {message}")
+        print(f"✅ SMS sent!")
     except Exception as e:
         print(f"❌ SMS failed: {e}")
 
-# ── Scraper ──────────────────────────────────────────────────────────────────
+# ── Checker ────────────────────────────────────────────────────────────────────
 
-async def check_availability() -> bool | None:
+def check_availability() -> bool | None:
     """
-    Returns:
-        True  — sites are available
-        False — no availability
-        None  — page load failed / bot check hit
+    Calls Parks Canada's availability API directly.
+    Returns True if available, False if not, None if check failed.
     """
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800},
-            locale="en-CA",
-        )
-        page = await context.new_page()
+    checkin  = SEARCH_CONFIG["checkin"]
+    checkout = SEARCH_CONFIG["checkout"]
 
-        # Mask webdriver flag
-        await page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
+    # Parks Canada's internal availability API endpoint
+    api_url = (
+        f"https://reservation.pc.gc.ca/api/availability/map"
+        f"?mapId={MAP_ID}"
+        f"&bookingCategoryId=0"
+        f"&startDate={checkin}"
+        f"&endDate={checkout}"
+        f"&lang=en-CA"
+    )
 
-        try:
-            print(f"[{now()}] Loading Parks Canada reservation page...")
-            await page.goto(CAMPGROUND_URL, wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_timeout(4000)  # let Angular fully render
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-CA,en;q=0.9",
+        "Referer": "https://reservation.pc.gc.ca/",
+        "Origin": "https://reservation.pc.gc.ca",
+    }
 
-            # ── Screenshot for debugging ──────────────────────────────────────
-            await page.screenshot(path="debug_screenshot.png", full_page=False)
-            print(f"[{now()}] Screenshot saved.")
+    try:
+        print(f"[{now()}] Checking Parks Canada API...")
+        resp = requests.get(api_url, headers=headers, timeout=15)
+        print(f"[{now()}] Response status: {resp.status_code}")
 
-            # ── Print page title and all buttons/inputs ───────────────────────
-            title = await page.title()
-            print(f"[{now()}] Page title: {title}")
-
-            labels = await page.evaluate("""
-                () => [...document.querySelectorAll('[aria-label], input, button, select')]
-                    .map(el => el.tagName + ' id=' + el.id + ' aria-label=' + el.getAttribute('aria-label') + ' text=' + el.innerText?.slice(0,30))
-                    .slice(0, 20)
-            """)
-            for l in labels:
-                print(f"  {l}")
-
-            # ── Dismiss cookie consent if present ────────────────────────────
-            try:
-                await page.click('button:has-text("I Consent")', timeout=5_000)
-                print(f"[{now()}] Dismissed cookie consent.")
-                await page.wait_for_timeout(3000)
-            except Exception:
-                print(f"[{now()}] No cookie banner found.")
-
-            # ── Post-consent labels ───────────────────────────────────────────
-            labels2 = await page.evaluate("""
-                () => [...document.querySelectorAll('[aria-label], input, select')]
-                    .map(el => el.tagName + ' id=' + el.id + ' aria-label=' + el.getAttribute('aria-label'))
-                    .slice(0, 20)
-            """)
-            print(f"[{now()}] Post-consent elements:")
-            for l in labels2:
-                print(f"  {l}")
-
-            # ── Park: Angular Material autocomplete ──────────────────────────
-            print(f"[{now()}] Selecting park...")
-            park_input = page.locator('[aria-label="Select park"], [role="combobox"][aria-label*="park" i], input[id*="park"]').first
-            await park_input.wait_for(state="visible", timeout=15_000)
-            await park_input.click()
-            await park_input.fill(SEARCH_CONFIG["park"])
-            await page.wait_for_timeout(1000)  # wait for autocomplete dropdown
-
-            # Click the matching option in the dropdown
-            option = page.locator(f'mat-option:has-text("{SEARCH_CONFIG["park"]}")')
-            await option.first.click(timeout=10_000)
-            await page.wait_for_timeout(1000)
-
-            # ── Campground: similar autocomplete ─────────────────────────────
-            print(f"[{now()}] Selecting campground...")
-            campground_input = page.locator('[id*="campground"], [aria-label*="campground"], [aria-label*="Campground"]').first
-            await campground_input.wait_for(timeout=10_000)
-            await campground_input.click()
-            await campground_input.fill(SEARCH_CONFIG["campground"][:20])  # type first 20 chars
-            await page.wait_for_timeout(1000)
-
-            option = page.locator(f'mat-option:has-text("Soft-sided")')
-            await option.first.click(timeout=10_000)
-            await page.wait_for_timeout(500)
-
-            # ── Dates ─────────────────────────────────────────────────────────
-            print(f"[{now()}] Filling dates...")
-            # Try common date field selectors
-            checkin = page.locator('[id*="checkin"], [id*="check-in"], [id*="arrival"], [placeholder*="arrival" i]').first
-            await checkin.wait_for(timeout=10_000)
-            await checkin.fill(SEARCH_CONFIG["checkin"])
-            await page.wait_for_timeout(300)
-
-            checkout = page.locator('[id*="checkout"], [id*="check-out"], [id*="departure"], [placeholder*="departure" i]').first
-            await checkout.fill(SEARCH_CONFIG["checkout"])
-            await page.wait_for_timeout(300)
-
-            # ── Party size ────────────────────────────────────────────────────
-            try:
-                party = page.locator('[id*="party"], [id*="guest"], [aria-label*="party" i]').first
-                await party.fill(str(SEARCH_CONFIG["party_size"]))
-                await page.wait_for_timeout(300)
-            except Exception:
-                pass  # Party size may not be required
-
-            # ── Submit ────────────────────────────────────────────────────────
-            print(f"[{now()}] Submitting search...")
-            await page.click('button[type="submit"], button:has-text("Search"), button:has-text("Check")')
-            await page.wait_for_load_state("networkidle", timeout=20_000)
-
-            # ── Parse results ─────────────────────────────────────────────────
-            content = await page.content()
-            content_lower = content.lower()
-
-            no_avail_phrases = [
-                "no sites available",
-                "no availability",
-                "aucun emplacement disponible",
-                "no campsites",
-                "0 available",
-            ]
-            avail_phrases = [
-                "book now",
-                "add to cart",
-                "reserve",
-                "sites available",
-            ]
-
-            if any(phrase in content_lower for phrase in no_avail_phrases):
-                return False
-
-            if any(phrase in content_lower for phrase in avail_phrases):
-                return True
-
-            print(f"[{now()}] ⚠️  Couldn't parse results page — possible bot check or layout change.")
-            # Save page snapshot for debugging
-            print(f"[{now()}] Page title: {await page.title()}")
+        if resp.status_code != 200:
+            print(f"[{now()}] ⚠️  Unexpected status code: {resp.status_code}")
+            print(f"[{now()}] Response: {resp.text[:300]}")
             return None
 
-        except Exception as e:
-            print(f"[{now()}] ❌ Error during check: {e}")
-            return None
-        finally:
-            await browser.close()
+        data = resp.json()
+        print(f"[{now()}] API response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+        print(f"[{now()}] Full response (first 500 chars): {str(data)[:500]}")
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+        # Parks Canada API returns availability per resource (campsite)
+        # Look for any site that is available
+        if isinstance(data, list):
+            available = [item for item in data if item.get("availability") == 1 or item.get("isAvailable") == True]
+            print(f"[{now()}] Total sites: {len(data)}, Available: {len(available)}")
+            return len(available) > 0
+
+        if isinstance(data, dict):
+            # Some API formats wrap in a results key
+            items = data.get("mapLinkAvailabilities") or data.get("results") or data.get("items") or []
+            available = [i for i in items if i.get("availability") == 1 or i.get("isAvailable")]
+            print(f"[{now()}] Total sites: {len(items)}, Available: {len(available)}")
+            return len(available) > 0
+
+        print(f"[{now()}] ⚠️  Unexpected response format")
+        return None
+
+    except requests.exceptions.Timeout:
+        print(f"[{now()}] ❌ Request timed out")
+        return None
+    except Exception as e:
+        print(f"[{now()}] ❌ Error: {e}")
+        return None
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def jitter(base: int, spread: int = 30) -> int:
-    """Add random ±spread seconds to avoid predictable bot patterns."""
     return base + random.randint(-spread, spread)
 
-# ── Main loop ────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────────
 
-async def main():
+def main():
     cfg = SEARCH_CONFIG
-
-    # SINGLE_CHECK=true → run once and exit (used by GitHub Actions)
-    # Otherwise → run forever in a loop (used by Railway / local)
     single_check = os.getenv("SINGLE_CHECK", "false").lower() == "true"
 
     print("=" * 60)
     print("  Parks Canada Campsite Availability Checker")
     print("=" * 60)
-    print(f"  Campground : {cfg['campground']}")
+    print(f"  Campground : Lake Louise Soft-sided (mapId={MAP_ID})")
     print(f"  Dates      : {cfg['checkin']} → {cfg['checkout']}")
-    print(f"  Party size : {cfg['party_size']}")
     print(f"  Mode       : {'single check (GitHub Actions)' if single_check else f'poll every ~{POLL_INTERVAL_BASE // 60} min'}")
     print("=" * 60)
 
     consecutive_failures = 0
 
     while True:
-        result = await check_availability()
+        result = check_availability()
 
         if result is True:
             message = (
-                f"🏕️ CAMPSITE AVAILABLE! "
-                f"{cfg['campground']} "
+                f"🏕️ CAMPSITE AVAILABLE! Lake Louise Soft-sided "
                 f"{cfg['checkin']} → {cfg['checkout']} "
-                f"— Book now: {CAMPGROUND_URL}"
+                f"— Book now: {BOOKING_URL}"
             )
             print(f"\n[{now()}] ✅ {message}\n")
             send_sms(message)
@@ -274,21 +178,16 @@ async def main():
             consecutive_failures += 1
             print(f"[{now()}] Check failed ({consecutive_failures} in a row).")
             if consecutive_failures >= 5:
-                send_sms(
-                    "⚠️ Campsite checker has failed 5 times in a row. "
-                    "Possible bot block — check the script."
-                )
+                send_sms("⚠️ Campsite checker failed 5x in a row — check the script.")
                 consecutive_failures = 0
 
-        # GitHub Actions: run once and exit — the scheduler calls us every 5 min
         if single_check:
             print(f"[{now()}] Single-check mode — done.")
             break
 
-        # Server mode: wait then loop
         wait = jitter(POLL_INTERVAL_BASE)
         print(f"[{now()}] Checking again in {wait // 60}m {wait % 60}s...")
-        await asyncio.sleep(wait)
+        time.sleep(wait)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
