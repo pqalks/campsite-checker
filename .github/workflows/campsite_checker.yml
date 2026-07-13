@@ -22,15 +22,29 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-v1
+          key: playwright-chromium-v2
 
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-      - name: Install Playwright browsers
-        uses: playwright-community/github-action@v1
-        with:
-              browsers: chromium
+          # Install Chromium system deps manually (fixes libasound2 name change in Ubuntu 24)
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2t64 \
+            libatk-bridge2.0-0 \
+            libatk1.0-0 \
+            libcups2 \
+            libdrm2 \
+            libgbm1 \
+            libgtk-3-0 \
+            libnspr4 \
+            libnss3 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxkbcommon0 \
+            libxrandr2
+          playwright install chromium
 
       - name: Check availability
         env:
