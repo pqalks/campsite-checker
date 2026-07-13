@@ -117,13 +117,38 @@ def check_availability() -> bool | None:
             return len(available) > 0
 
         if isinstance(data, dict):
-            # Some API formats wrap in a results key
-            items = data.get("mapLinkAvailabilities") or data.get("results") or data.get("items") or []
-            available = [i for i in items if i.get("availability") == 1 or i.get("isAvailable")]
-            print(f"[{now()}] Total sites: {len(items)}, Available: {len(available)}")
-            return len(available) > 0
+            # mapAvailabilities: availability of the whole map
+            # mapLinkAvailabilities: dict of sub-map IDs → list of availability codes
+            #   1 = available, 0 = not available, 2 = partially available
+            # resourceAvailabilities: individual campsite availability (empty if none bookable)
 
-        print(f"[{now()}] ⚠️  Unexpected response format")
+            map_avail = data.get("mapAvailabilities", [])
+            link_avail = data.get("mapLinkAvailabilities", {})
+            resource_avail = data.get("resourceAvailabilities", {})
+
+            print(f"[{now()}] Map availability codes: {map_avail}")
+            print(f"[{now()}] Sub-map availability: {link_avail}")
+            print(f"[{now()}] Resource availability: {resource_avail}")
+
+            # Check if any availability code is 1 (available) at any level
+            map_has_avail = 1 in map_avail
+
+            link_has_avail = any(
+                1 in codes
+                for codes in link_avail.values()
+                if isinstance(codes, list)
+            )
+
+            resource_has_avail = any(
+                1 in (codes if isinstance(codes, list) else [codes])
+                for codes in resource_avail.values()
+            )
+
+            is_available = map_has_avail or link_has_avail or resource_has_avail
+            print(f"[{now()}] Available: {is_available} (map={map_has_avail}, links={link_has_avail}, resources={resource_has_avail})")
+            return is_available
+
+        print(f"[{now()}] ⚠️  Unexpected response format: {type(data)}")
         return None
 
     except requests.exceptions.Timeout:
