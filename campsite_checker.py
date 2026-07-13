@@ -21,7 +21,6 @@ Run:
 import asyncio
 import os
 import random
-import time
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -36,7 +35,7 @@ CAMPGROUND_URL = "https://reservation.pc.gc.ca/camping/campgrounds/availability"
 
 # Edit these to match your search
 SEARCH_CONFIG = {
-    "park":        "Banff National Park",
+    "park":        "Banff - Lake Louise",        # exactly as it appears in the dropdown
     "campground":  "Lake Louise Campground - Soft-sided",
     "checkin":     "2026-08-07",   # YYYY-MM-DD
     "checkout":    "2026-08-08",   # YYYY-MM-DD
@@ -104,58 +103,93 @@ async def check_availability() -> bool | None:
             print(f"[{now()}] Loading Parks Canada reservation page...")
             await page.goto(CAMPGROUND_URL, wait_until="networkidle", timeout=30_000)
 
-            # ── Fill in the search form ──────────────────────────────────────
-            # Parks Canada's form varies — adapt selectors if the site changes.
+            # ── Dismiss cookie consent if present ────────────────────────────
+            try:
+                await page.click('button:has-text("I Consent")', timeout=5_000)
+                print(f"[{now()}] Dismissed cookie consent.")
+                await page.wait_for_timeout(500)
+            except Exception:
+                pass  # No cookie banner, that's fine
 
-            # Park selector
-            await page.select_option('select[name="park"], select[id*="park"]',
-                                     label=SEARCH_CONFIG["park"])
+            # ── Park: Angular Material autocomplete ──────────────────────────
+            # The park field is a combobox with id="park-autocomplete-input"
+            # We click it, type the park name, wait for the dropdown, then click the option.
+            print(f"[{now()}] Selecting park...")
+            park_input = page.locator('#park-autocomplete-input')
+            await park_input.wait_for(timeout=15_000)
+            await park_input.click()
+            await park_input.fill(SEARCH_CONFIG["park"])
+            await page.wait_for_timeout(1000)  # wait for autocomplete dropdown
+
+            # Click the matching option in the dropdown
+            option = page.locator(f'mat-option:has-text("{SEARCH_CONFIG["park"]}")')
+            await option.first.click(timeout=10_000)
             await page.wait_for_timeout(1000)
 
-            # Campground selector
-            await page.select_option('select[name="campground"], select[id*="campground"]',
-                                     label=SEARCH_CONFIG["campground"])
+            # ── Campground: similar autocomplete ─────────────────────────────
+            print(f"[{now()}] Selecting campground...")
+            campground_input = page.locator('[id*="campground"], [aria-label*="campground"], [aria-label*="Campground"]').first
+            await campground_input.wait_for(timeout=10_000)
+            await campground_input.click()
+            await campground_input.fill(SEARCH_CONFIG["campground"][:20])  # type first 20 chars
+            await page.wait_for_timeout(1000)
+
+            option = page.locator(f'mat-option:has-text("Soft-sided")')
+            await option.first.click(timeout=10_000)
             await page.wait_for_timeout(500)
 
-            # Dates
-            await page.fill('input[name="checkin"], input[id*="checkin"]',
-                            SEARCH_CONFIG["checkin"])
-            await page.fill('input[name="checkout"], input[id*="checkout"]',
-                            SEARCH_CONFIG["checkout"])
+            # ── Dates ─────────────────────────────────────────────────────────
+            print(f"[{now()}] Filling dates...")
+            # Try common date field selectors
+            checkin = page.locator('[id*="checkin"], [id*="check-in"], [id*="arrival"], [placeholder*="arrival" i]').first
+            await checkin.wait_for(timeout=10_000)
+            await checkin.fill(SEARCH_CONFIG["checkin"])
+            await page.wait_for_timeout(300)
 
-            # Party size
-            await page.fill('input[name="partySize"], input[id*="party"]',
-                            str(SEARCH_CONFIG["party_size"]))
+            checkout = page.locator('[id*="checkout"], [id*="check-out"], [id*="departure"], [placeholder*="departure" i]').first
+            await checkout.fill(SEARCH_CONFIG["checkout"])
+            await page.wait_for_timeout(300)
 
-            # Submit
-            await page.click('button[type="submit"], input[type="submit"]')
+            # ── Party size ────────────────────────────────────────────────────
+            try:
+                party = page.locator('[id*="party"], [id*="guest"], [aria-label*="party" i]').first
+                await party.fill(str(SEARCH_CONFIG["party_size"]))
+                await page.wait_for_timeout(300)
+            except Exception:
+                pass  # Party size may not be required
+
+            # ── Submit ────────────────────────────────────────────────────────
+            print(f"[{now()}] Submitting search...")
+            await page.click('button[type="submit"], button:has-text("Search"), button:has-text("Check")')
             await page.wait_for_load_state("networkidle", timeout=20_000)
 
-            # ── Parse results ────────────────────────────────────────────────
+            # ── Parse results ─────────────────────────────────────────────────
             content = await page.content()
+            content_lower = content.lower()
 
-            # These phrases appear on the Parks Canada results page
             no_avail_phrases = [
                 "no sites available",
                 "no availability",
                 "aucun emplacement disponible",
+                "no campsites",
+                "0 available",
             ]
             avail_phrases = [
-                "available",
                 "book now",
-                "select",
+                "add to cart",
+                "reserve",
+                "sites available",
             ]
 
-            content_lower = content.lower()
-
-            if any(p in content_lower for p in no_avail_phrases):
+            if any(phrase in content_lower for phrase in no_avail_phrases):
                 return False
 
-            if any(p in content_lower for p in avail_phrases):
+            if any(phrase in content_lower for phrase in avail_phrases):
                 return True
 
-            # Couldn't parse — might be a bot check or page change
-            print(f"[{now()}] ⚠️  Couldn't parse page — possible bot check or layout change.")
+            print(f"[{now()}] ⚠️  Couldn't parse results page — possible bot check or layout change.")
+            # Save page snapshot for debugging
+            print(f"[{now()}] Page title: {await page.title()}")
             return None
 
         except Exception as e:
