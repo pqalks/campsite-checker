@@ -101,27 +101,45 @@ async def check_availability() -> bool | None:
 
         try:
             print(f"[{now()}] Loading Parks Canada reservation page...")
-            await page.goto(CAMPGROUND_URL, wait_until="networkidle", timeout=30_000)
+            await page.goto(CAMPGROUND_URL, wait_until="domcontentloaded", timeout=30_000)
+            await page.wait_for_timeout(4000)  # let Angular fully render
+
+            # ── Screenshot for debugging ──────────────────────────────────────
+            await page.screenshot(path="debug_screenshot.png", full_page=False)
+            print(f"[{now()}] Screenshot saved.")
+
+            # ── Print page title and all buttons/inputs ───────────────────────
+            title = await page.title()
+            print(f"[{now()}] Page title: {title}")
+
+            labels = await page.evaluate("""
+                () => [...document.querySelectorAll('[aria-label], input, button, select')]
+                    .map(el => el.tagName + ' id=' + el.id + ' aria-label=' + el.getAttribute('aria-label') + ' text=' + el.innerText?.slice(0,30))
+                    .slice(0, 20)
+            """)
+            for l in labels:
+                print(f"  {l}")
 
             # ── Dismiss cookie consent if present ────────────────────────────
             try:
                 await page.click('button:has-text("I Consent")', timeout=5_000)
                 print(f"[{now()}] Dismissed cookie consent.")
-                await page.wait_for_load_state("networkidle", timeout=10_000)
-                await page.wait_for_timeout(2000)  # extra wait for Angular to re-render
+                await page.wait_for_timeout(3000)
             except Exception:
-                pass  # No cookie banner, that's fine
+                print(f"[{now()}] No cookie banner found.")
 
-            # ── Debug: print all aria-labels and roles on page ───────────────
-            labels = await page.evaluate("""
-                () => [...document.querySelectorAll('[aria-label]')]
-                    .map(el => el.tagName + ' aria-label="' + el.getAttribute('aria-label') + '"')
+            # ── Post-consent labels ───────────────────────────────────────────
+            labels2 = await page.evaluate("""
+                () => [...document.querySelectorAll('[aria-label], input, select')]
+                    .map(el => el.tagName + ' id=' + el.id + ' aria-label=' + el.getAttribute('aria-label'))
+                    .slice(0, 20)
             """)
-            print(f"[{now()}] aria-labels found: {labels[:10]}")
+            print(f"[{now()}] Post-consent elements:")
+            for l in labels2:
+                print(f"  {l}")
 
             # ── Park: Angular Material autocomplete ──────────────────────────
             print(f"[{now()}] Selecting park...")
-            # Try multiple selectors in order of specificity
             park_input = page.locator('[aria-label="Select park"], [role="combobox"][aria-label*="park" i], input[id*="park"]').first
             await park_input.wait_for(state="visible", timeout=15_000)
             await park_input.click()
