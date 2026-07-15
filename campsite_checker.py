@@ -74,6 +74,7 @@ def check_availability() -> bool | None:
     checkout = SEARCH_CONFIG["checkout"]
 
     # Parks Canada's internal availability API endpoint
+    # Parameters extracted from the real booking URL
     api_url = (
         f"https://reservation.pc.gc.ca/api/availability/map"
         f"?mapId={MAP_ID}"
@@ -81,6 +82,10 @@ def check_availability() -> bool | None:
         f"&startDate={checkin}"
         f"&endDate={checkout}"
         f"&lang=en-CA"
+        f"&equipmentId=-32768"          # tent
+        f"&subEquipmentId=-32767"       # medium tent
+        f"&resourceLocationId=-2147483640"   # Lake Louise Campground
+        f"&transactionLocationId=-2147483647" # Banff-Lake Louise park
     )
 
     headers = {
@@ -145,6 +150,10 @@ def check_availability() -> bool | None:
                     f"&startDate={checkin}"
                     f"&endDate={checkout}"
                     f"&lang=en-CA"
+                    f"&equipmentId=-32768"
+                    f"&subEquipmentId=-32767"
+                    f"&resourceLocationId=-2147483640"
+                    f"&transactionLocationId=-2147483647"
                 )
                 try:
                     sub_resp = requests.get(sub_url, headers=headers, timeout=10)
