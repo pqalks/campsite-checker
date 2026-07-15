@@ -117,36 +117,49 @@ def check_availability() -> bool | None:
             return len(available) > 0
 
         if isinstance(data, dict):
-            # mapAvailabilities: availability of the whole map
-            # mapLinkAvailabilities: dict of sub-map IDs → list of availability codes
-            #   1 = available, 0 = not available, 2 = partially available
-            # resourceAvailabilities: individual campsite availability (empty if none bookable)
-
-            map_avail = data.get("mapAvailabilities", [])
+            # The top-level map just groups sub-maps (campground loops).
+            # Real availability is in resourceAvailabilities (individual sites).
+            # We need to query each sub-map to get resourceAvailabilities.
             link_avail = data.get("mapLinkAvailabilities", {})
             resource_avail = data.get("resourceAvailabilities", {})
 
-            print(f"[{now()}] Map availability codes: {map_avail}")
-            print(f"[{now()}] Sub-map availability: {link_avail}")
-            print(f"[{now()}] Resource availability: {resource_avail}")
+            print(f"[{now()}] Sub-maps found: {list(link_avail.keys())}")
+            print(f"[{now()}] Top-level resources: {resource_avail}")
 
-            # Check if any availability code is 1 (available) at any level
-            map_has_avail = 1 in map_avail
+            # If top-level already has resource availability, check it
+            # availability code 1 = available, 0 = closed, 2 = unavailable, 3 = non-reservable
+            if resource_avail:
+                available_sites = [rid for rid, codes in resource_avail.items()
+                                   if isinstance(codes, list) and 1 in codes]
+                print(f"[{now()}] Available sites at top level: {available_sites}")
+                if available_sites:
+                    return True
 
-            link_has_avail = any(
-                1 in codes
-                for codes in link_avail.values()
-                if isinstance(codes, list)
-            )
+            # Drill into each sub-map (campground loop) to find actual site availability
+            all_available = []
+            for sub_map_id in link_avail.keys():
+                sub_url = (
+                    f"https://reservation.pc.gc.ca/api/availability/map"
+                    f"?mapId={sub_map_id}"
+                    f"&bookingCategoryId=0"
+                    f"&startDate={checkin}"
+                    f"&endDate={checkout}"
+                    f"&lang=en-CA"
+                )
+                try:
+                    sub_resp = requests.get(sub_url, headers=headers, timeout=10)
+                    if sub_resp.status_code == 200:
+                        sub_data = sub_resp.json()
+                        sub_resources = sub_data.get("resourceAvailabilities", {})
+                        available = [rid for rid, codes in sub_resources.items()
+                                     if isinstance(codes, list) and 1 in codes]
+                        print(f"[{now()}] Sub-map {sub_map_id}: {len(sub_resources)} sites, {len(available)} available")
+                        all_available.extend(available)
+                except Exception as e:
+                    print(f"[{now()}] Sub-map {sub_map_id} error: {e}")
 
-            resource_has_avail = any(
-                1 in (codes if isinstance(codes, list) else [codes])
-                for codes in resource_avail.values()
-            )
-
-            is_available = map_has_avail or link_has_avail or resource_has_avail
-            print(f"[{now()}] Available: {is_available} (map={map_has_avail}, links={link_has_avail}, resources={resource_has_avail})")
-            return is_available
+            print(f"[{now()}] Total available sites: {len(all_available)}")
+            return len(all_available) > 0
 
         print(f"[{now()}] ⚠️  Unexpected response format: {type(data)}")
         return None
