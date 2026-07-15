@@ -16,7 +16,6 @@ from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
-from twilio.rest import Client
 
 load_dotenv()
 
@@ -39,23 +38,33 @@ BOOKING_URL = (
 
 POLL_INTERVAL_BASE = 300  # 5 minutes
 
-TWILIO_SID   = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM  = os.getenv("TWILIO_FROM")
-TWILIO_TO    = os.getenv("TWILIO_TO")
+# Telegram-specific variables (replaces Twilio config)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 
 # ── Alert ──────────────────────────────────────────────────────────────────────
 
 def send_sms(message: str):
-    if not all([TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM, TWILIO_TO]):
-        print(f"⚠️  Twilio not configured — would have sent: {message}")
+    """
+    Keeps the function name intact but routes the message payload
+    directly through Telegram's free Bot API.
+    """
+    if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
+        print(f"⚠️  Telegram not configured — would have sent: {message}")
         return
+        
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+    
     try:
-        client = Client(TWILIO_SID, TWILIO_TOKEN)
-        client.messages.create(body=message, from_=TWILIO_FROM, to=TWILIO_TO)
-        print(f"✅ SMS sent!")
+        response = requests.post(url, json=payload, timeout=15)
+        response.raise_for_status()
+        print(f"✅ Telegram notification sent!")
     except Exception as e:
-        print(f"❌ SMS failed: {e}")
+        print(f"❌ Telegram alert failed: {e}")
 
 # ── API ────────────────────────────────────────────────────────────────────────
 
