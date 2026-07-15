@@ -1,18 +1,70 @@
 """
-Parks Canada - Code Detective Script
-Queries the J+K loop for both available and unavailable dates
-and prints ALL site IDs and codes so we can identify K6 and K7.
+Parks Canada Campsite Availability Checker
+==========================================
+Checks Lake Louise Soft-sided campground for tent availability.
+
+DECODED availability codes (from comparing known dates):
+  0 = AVAILABLE (bookable)
+  1 = UNAVAILABLE
+  4 = Not Operating / Non-Reservable
 """
 
 import os
-import requests
+import random
+import time
 from datetime import datetime
+
+import requests
 from dotenv import load_dotenv
+from twilio.rest import Client
 
 load_dotenv()
 
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+MAP_ID_PARENT = -2147483646  # Lake Louise Soft-sided (parent map)
+
+SEARCH_CONFIG = {
+    "checkin":  "2026-08-07",
+    "checkout": "2026-08-08",
+}
+
+BOOKING_URL = (
+    "https://reservation.pc.gc.ca/create-booking/results"
+    "?mapId=-2147483646&searchTabGroupId=0&bookingCategoryId=0"
+    "&transactionLocationId=-2147483647&resourceLocationId=-2147483640"
+    "&startDate=2026-08-07&endDate=2026-08-08&nights=1&isReserving=true"
+    "&equipmentId=-32768&subEquipmentId=-32767"
+)
+
+POLL_INTERVAL_BASE = 300  # 5 minutes
+
+TWILIO_SID   = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_FROM  = os.getenv("TWILIO_FROM")
+TWILIO_TO    = os.getenv("TWILIO_TO")
+
+# ── Alert ──────────────────────────────────────────────────────────────────────
+
+def send_sms(message: str):
+    if not all([TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM, TWILIO_TO]):
+        print(f"⚠️  Twilio not configured — would have sent: {message}")
+        return
+    try:
+        client = Client(TWILIO_SID, TWILIO_TOKEN)
+        client.messages.create(body=message, from_=TWILIO_FROM, to=TWILIO_TO)
+        print(f"✅ SMS sent!")
+    except Exception as e:
+        print(f"❌ SMS failed: {e}")
+
+# ── API ────────────────────────────────────────────────────────────────────────
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
     "Accept": "application/json",
     "Referer": "https://reservation.pc.gc.ca/",
     "Origin": "https://reservation.pc.gc.ca",
@@ -35,56 +87,113 @@ def query_map(map_id, checkin, checkout):
     resp.raise_for_status()
     return resp.json()
 
+# ── Checker ────────────────────────────────────────────────────────────────────
+
+def check_availability() -> bool | None:
+    checkin  = SEARCH_CONFIG["checkin"]
+    checkout = SEARCH_CONFIG["checkout"]
+
+    try:
+        print(f"[{now()}] Querying parent map...")
+        parent_data = query_map(MAP_ID_PARENT, checkin, checkout)
+        sub_maps = list(parent_data.get("mapLinkAvailabilities", {}).keys())
+        print(f"[{now()}] Sub-maps: {sub_maps}")
+
+        all_available = []
+
+        for sub_map_id in sub_maps:
+            sub_data      = query_map(sub_map_id, checkin, checkout)
+            sub_resources = sub_data.get("resourceAvailabilities", {})
+
+            # availability=0 means AVAILABLE (decoded from comparing known dates)
+            available = [
+                rid for rid, entries in sub_resources.items()
+                if isinstance(entries, list)
+                and any(
+                    isinstance(e, dict) and e.get("availability") == 0
+                    for e in entries
+                )
+            ]
+
+            unavailable = [
+                rid for rid, entries in sub_resources.items()
+                if isinstance(entries, list)
+                and any(
+                    isinstance(e, dict) and e.get("availability") == 1
+                    for e in entries
+                )
+            ]
+
+            print(f"[{now()}] Sub-map {sub_map_id}: {len(sub_resources)} sites — "
+                  f"{len(available)} available, {len(unavailable)} unavailable")
+
+            if available:
+                print(f"[{now()}]   ✅ Available site IDs: {available}")
+
+            all_available.extend(available)
+
+        print(f"[{now()}] Total available sites: {len(all_available)}")
+        return len(all_available) > 0
+
+    except Exception as e:
+        print(f"[{now()}] ❌ Error: {e}")
+        return None
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
 def now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def jitter(base, spread=30):
+    return base + random.randint(-spread, spread)
+
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     single_check = os.getenv("SINGLE_CHECK", "false").lower() == "true"
 
     print("=" * 60)
-    print("  CODE DETECTIVE — Finding K6 and K7 site IDs")
+    print("  Parks Canada Campsite Availability Checker")
+    print("=" * 60)
+    print(f"  Campground : Lake Louise Soft-sided")
+    print(f"  Dates      : {SEARCH_CONFIG['checkin']} → {SEARCH_CONFIG['checkout']}")
+    print(f"  Logic      : availability=0 means AVAILABLE")
+    print(f"  Mode       : {'single check (GitHub Actions)' if single_check else f'poll every ~{POLL_INTERVAL_BASE // 60} min'}")
     print("=" * 60)
 
-    MAP_JK = -2147483642  # J+K loop
+    consecutive_failures = 0
 
-    # Query Sep 22-23 (known available — K7 is green)
-    print(f"\n[{now()}] Querying Sep 22-23 (K7 = AVAILABLE, K6 = UNAVAILABLE)...")
-    try:
-        data_sep = query_map(MAP_JK, "2026-09-22", "2026-09-23")
-        resources_sep = data_sep.get("resourceAvailabilities", {})
-        print(f"Total sites in J+K loop: {len(resources_sep)}")
-        print(f"\nAll sites — Sep 22-23:")
-        for rid, codes in sorted(resources_sep.items(), key=lambda x: int(x[0])):
-            print(f"  Site ID {rid}: codes={codes}")
-    except Exception as e:
-        print(f"Error: {e}")
-        resources_sep = {}
+    while True:
+        result = check_availability()
 
-    # Query Aug 7-8 (known unavailable)
-    print(f"\n[{now()}] Querying Aug 7-8 (all UNAVAILABLE)...")
-    try:
-        data_aug = query_map(MAP_JK, "2026-08-07", "2026-08-08")
-        resources_aug = data_aug.get("resourceAvailabilities", {})
-        print(f"\nAll sites — Aug 7-8:")
-        for rid, codes in sorted(resources_aug.items(), key=lambda x: int(x[0])):
-            print(f"  Site ID {rid}: codes={codes}")
-    except Exception as e:
-        print(f"Error: {e}")
-        resources_aug = {}
+        if result is True:
+            message = (
+                f"CAMPSITE AVAILABLE! Lake Louise Soft-sided "
+                f"{SEARCH_CONFIG['checkin']} to {SEARCH_CONFIG['checkout']} "
+                f"Book now: {BOOKING_URL}"
+            )
+            print(f"\n[{now()}] ✅ {message}\n")
+            send_sms(message)
+            consecutive_failures = 0
 
-    # Compare — find sites where codes differ
-    print(f"\n[{now()}] Sites where codes DIFFER between the two dates:")
-    all_ids = set(resources_sep.keys()) | set(resources_aug.keys())
-    for rid in sorted(all_ids, key=lambda x: int(x)):
-        c_aug = resources_aug.get(rid, "missing")
-        c_sep = resources_sep.get(rid, "missing")
-        if c_aug != c_sep:
-            print(f"  *** Site {rid}: Aug 7-8={c_aug}  Sep 22-23={c_sep}  ← DIFFERENT")
+        elif result is False:
+            print(f"[{now()}] No availability.")
+            consecutive_failures = 0
+
         else:
-            print(f"      Site {rid}: Aug 7-8={c_aug}  Sep 22-23={c_sep}  (same)")
+            consecutive_failures += 1
+            print(f"[{now()}] Check failed ({consecutive_failures} in a row).")
+            if consecutive_failures >= 5:
+                send_sms("Campsite checker failed 5x in a row — check the script.")
+                consecutive_failures = 0
 
-    if single_check:
-        print(f"\n[{now()}] Done. Check the output above, then tell me which site IDs are K6 and K7!")
+        if single_check:
+            print(f"[{now()}] Single-check mode — done.")
+            break
+
+        wait = jitter(POLL_INTERVAL_BASE)
+        print(f"[{now()}] Checking again in {wait // 60}m {wait % 60}s...")
+        time.sleep(wait)
 
 if __name__ == "__main__":
     main()
