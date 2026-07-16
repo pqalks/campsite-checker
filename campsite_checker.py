@@ -24,8 +24,8 @@ load_dotenv()
 MAP_ID_PARENT = -2147483646  # Lake Louise Soft-sided (parent map)
 
 SEARCH_CONFIG = {
-    "checkin":  "2026-09-22",
-    "checkout": "2026-09-23",
+    "checkin":  "2026-08-07",
+    "checkout": "2026-08-08",
 }
 
 BOOKING_URL = (
